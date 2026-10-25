@@ -94,10 +94,10 @@ dashboard() {
     clear
     load_conf
     compute_online
-    local today total=0 expd=0 onl=0 h n e m s
+    local today total=0 expd=0 onl=0 h n e m s t p
     today=$(date +%F)
     if [[ -f $DB ]]; then
-        while IFS='|' read -r h n e m s; do
+        while IFS='|' read -r h n e m s t p; do
             [[ -z $h ]] && continue
             total=$((total+1))
             [[ ! "$e" > "$today" ]] && expd=$((expd+1))
@@ -125,105 +125,239 @@ dashboard() {
     line
     echo " ${C}◈${N} RAM: ${W}${ram}${N}  ${C}◈${N} CPU: ${W}${cpu}%${N}  ${C}◈${N} DISCO: ${W}${disk}${N}"
     line
-    echo " ${R}[${W}01${R}]${N} ${C}◈${N} CREAR / AUTORIZAR HWID  ${G}(con link)${N}"
-    echo " ${R}[${W}02${R}]${N} ${C}◈${N} LISTA DE CLIENTES  ${G}(online / vencimientos)${N}"
-    echo " ${R}[${W}03${R}]${N} ${C}◈${N} RENOVAR HWID"
-    echo " ${R}[${W}04${R}]${N} ${C}◈${N} SUSPENDER / REACTIVAR HWID"
-    echo " ${R}[${W}05${R}]${N} ${C}◈${N} ELIMINAR HWID"
-    echo " ${R}[${W}06${R}]${N} ${C}◈${N} GENERAR LINK slipnet:// DE UN HWID"
-    echo " ${R}[${W}07${R}]${N} ${C}◈${N} REINICIAR TÚNELES"
-    echo " ${R}[${W}08${R}]${N} ${C}◈${N} AJUSTES  ${G}(dominio / MTU / puerto destino)${N}"
-    echo " ${R}[${W}09${R}]${N} ${C}◈${N} INSTALAR / REPARAR / ACTUALIZAR MOTORES"
-    echo " ${R}[${W}10${R}]${N} ${C}◈${N} ACTUALIZAR SCRIPT"
+    echo " ${R}[${W}01${R}]${N} ${C}◈${N} CREAR HWID  ${G}(con link)${N}"
+    echo " ${R}[${W}02${R}]${N} ${C}◈${N} CREAR USUARIO MANUAL  ${G}(usuario / clave)${N}"
+    echo " ${R}[${W}03${R}]${N} ${C}◈${N} CREAR USUARIOS EN LOTE"
+    echo " ${R}[${W}04${R}]${N} ${C}◈${N} LISTA DE CLIENTES  ${G}(online / vencimientos)${N}"
+    echo " ${R}[${W}05${R}]${N} ${C}◈${N} EDITAR  ${G}(clave / límite / vencimiento)${N}"
+    echo " ${R}[${W}06${R}]${N} ${C}◈${N} RENOVAR"
+    echo " ${R}[${W}07${R}]${N} ${C}◈${N} SUSPENDER / REACTIVAR"
+    echo " ${R}[${W}08${R}]${N} ${C}◈${N} ELIMINAR"
+    echo " ${R}[${W}09${R}]${N} ${C}◈${N} ELIMINAR VENCIDOS"
+    echo " ${R}[${W}10${R}]${N} ${C}◈${N} GENERAR LINK slipnet://"
+    echo " ${R}[${W}11${R}]${N} ${C}◈${N} REINICIAR TÚNELES"
+    echo " ${R}[${W}12${R}]${N} ${C}◈${N} AJUSTES  ${G}(dominio / MTU / puerto destino)${N}"
+    echo " ${R}[${W}13${R}]${N} ${C}◈${N} INSTALAR / REPARAR / ACTUALIZAR MOTORES"
+    echo " ${R}[${W}14${R}]${N} ${C}◈${N} ACTUALIZAR SCRIPT"
     echo " ${R}[${W}00${R}]${N} ${C}◈${N} ${R}[ SALIR ]${N}"
     line
 }
 
-# ══════════════════════════ USUARIOS / HWID ══════════════════════════
-valid_hwid() { [[ "$1" =~ ^[A-Za-z0-9]{6,32}$ ]]; }
-
-create_user() {   # $1=hwid $2=nombre $3=fecha_exp
-    local nologin; nologin=$(command -v nologin || echo /usr/sbin/nologin)
-    if id "$1" &>/dev/null; then
-        usermod -U -e "$3" "$1"
-    else
-        useradd -M -s "$nologin" -e "$3" -c "$2" "$1" 2>/dev/null \
-        || useradd --badname -M -s "$nologin" -e "$3" -c "$2" "$1"
-    fi
-    echo "$1:$1" | chpasswd
-}
-
-set_limit() {     # $1=hwid $2=max
-    touch "$LIMITS"
-    sed -i "/^$1[[:space:]]/d" "$LIMITS"
-    echo "$1 hard maxlogins $2" >> "$LIMITS"
-}
-
-db_set() {        # hwid|nombre|exp|max|estado
-    touch "$DB"
-    sed -i "/^$1|/d" "$DB"
-    echo "$1|$2|$3|$4|$5" >> "$DB"
-}
+# ══════════════════════════ USUARIOS (HWID + MANUAL) ══════════════════════════
+# DB: id|nombre|vence|limite|estado|tipo|clave      (tipo = HWID o MANUAL)
+valid_hwid()  { [[ "$1" =~ ^[A-Za-z0-9]{6,32}$ ]]; }
+valid_uname() { [[ "$1" =~ ^[a-z_][a-z0-9_-]{2,31}$ ]]; }
+valid_id()    { [[ "$1" =~ ^[A-Za-z0-9_-]{3,32}$ ]]; }
+valid_limit() { [[ "$1" =~ ^[0-9]{1,3}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 999 )); }
+valid_days()  { [[ "$1" =~ ^[0-9]{1,4}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 3650 )); }
+valid_pass()  { [[ "$1" =~ ^[A-Za-z0-9@#%+=._-]{4,32}$ ]]; }
+rand_pass()   { tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' </dev/urandom | head -c 8; }
 
 db_get() { grep "^$1|" "$DB" 2>/dev/null | head -1; }
+
+# Evita tocar usuarios del sistema (root, backup, etc.)
+is_foreign() { id "$1" &>/dev/null && [[ -z $(db_get "$1") ]]; }
+
+create_user() {   # $1=id $2=nombre $3=fecha_exp [$4=clave]
+    local nologin; nologin=$(command -v nologin || echo /usr/sbin/nologin)
+    if id "$1" &>/dev/null; then
+        usermod -U -e "$3" "$1" || return 1
+        [[ -n $4 ]] && echo "$1:$4" | chpasswd
+    else
+        { useradd -M -s "$nologin" -e "$3" -c "$2" "$1" 2>/dev/null \
+          || useradd --badname -M -s "$nologin" -e "$3" -c "$2" "$1"; } || return 1
+        echo "$1:${4:-$1}" | chpasswd
+    fi
+}
+
+set_limit() {     # $1=id $2=max
+    touch "$LIMITS"
+    sed -i "/^$1[[:space:]]/d" "$LIMITS"
+    echo "$1 hard maxlogins $((10#$2))" >> "$LIMITS"
+}
+
+db_set() {        # id nombre exp max estado [tipo] [clave]
+    touch "$DB"; chmod 600 "$DB"
+    local old tipo pass
+    old=$(db_get "$1")
+    IFS='|' read -r _ _ _ _ _ tipo pass <<< "$old"
+    tipo=${6:-${tipo:-HWID}}
+    [[ $# -ge 7 ]] && pass=$7
+    sed -i "/^$1|/d" "$DB"
+    echo "$1|$2|$3|$4|$5|$tipo|$pass" >> "$DB"
+}
+
+user_card() {     # id nombre exp lim tipo clave
+    echo "    ${C}Usuario:${N}      $1"
+    if [[ "$5" == "MANUAL" ]]; then echo "    ${C}Contraseña:${N}   $6"
+    else echo "    ${C}Contraseña:${N}   (igual al HWID)"; fi
+    echo "    ${C}Cliente:${N}      $2"
+    echo "    ${C}Vence:${N}        $3  ($(days_left "$3") días)"
+    echo "    ${C}Límite:${N}       $4 conexión(es) simultánea(s)"
+}
 
 add_client() {
     clear; echo "${BGC}        🔑  AUTORIZAR NUEVO DISPOSITIVO (HWID)        ${N}"; echo
     read -rp "  HWID del dispositivo: " h
     valid_hwid "$h" || { fail "HWID inválido (solo letras/números, 6-32)"; pause; return; }
+    is_foreign "$h" && { fail "Ese nombre ya existe en el sistema (no es de TitoFlow)"; pause; return; }
     read -rp "  Nombre / referencia del cliente: " name
     name=${name//|/ }; name=${name:-cliente}
     read -rp "  Días de vigencia [30]: " d; d=${d:-30}
-    [[ "$d" =~ ^[0-9]+$ ]] || { fail "Días inválidos"; pause; return; }
-    read -rp "  Límite de dispositivos simultáneos [1]: " m; m=${m:-1}
-    [[ "$m" =~ ^[0-9]+$ ]] || { fail "Límite inválido"; pause; return; }
+    valid_days "$d" || { fail "Días inválidos (1-3650)"; pause; return; }
+    read -rp "  Límite de dispositivos simultáneos (1-999) [1]: " m; m=${m:-1}
+    valid_limit "$m" || { fail "Límite inválido (1-999)"; pause; return; }
+    d=$((10#$d)); m=$((10#$m))
 
     local exp; exp=$(date -d "+$d days" +%F)
-    create_user "$h" "$name" "$exp" || { fail "No se pudo crear el usuario"; pause; return; }
+    create_user "$h" "$name" "$exp" "$h" || { fail "No se pudo crear el usuario"; pause; return; }
     set_limit "$h" "$m"
-    db_set "$h" "$name" "$exp" "$m" "ACTIVO"
+    db_set "$h" "$name" "$exp" "$m" ACTIVO HWID ""
+    echo; ok "Dispositivo autorizado"
+    user_card "$h" "$name" "$exp" "$m" HWID ""
+    echo; generate_uri "$h"
+    pause
+}
 
+add_manual() {
+    clear; echo "${BGC}        👤  CREAR USUARIO MANUAL (usuario + contraseña)        ${N}"; echo
+    read -rp "  Usuario (minúsculas/números, 3-32): " u
+    valid_uname "$u" || { fail "Usuario inválido (minúsculas, números, _ -; empieza con letra)"; pause; return; }
+    is_foreign "$u" && { fail "Ese usuario ya existe en el sistema (no es de TitoFlow)"; pause; return; }
+    read -rp "  Contraseña [Enter = generar]: " p; p=${p:-$(rand_pass)}
+    valid_pass "$p" || { fail "Contraseña inválida (4-32 caracteres: letras, números y @#%+=._-)"; pause; return; }
+    read -rp "  Nombre / referencia [Enter = usuario]: " name
+    name=${name//|/ }; name=${name:-$u}
+    read -rp "  Días de vigencia [30]: " d; d=${d:-30}
+    valid_days "$d" || { fail "Días inválidos (1-3650)"; pause; return; }
+    read -rp "  Límite de conexiones simultáneas (1-999) [1]: " m; m=${m:-1}
+    valid_limit "$m" || { fail "Límite inválido (1-999)"; pause; return; }
+    d=$((10#$d)); m=$((10#$m))
+
+    local exp; exp=$(date -d "+$d days" +%F)
+    create_user "$u" "$name" "$exp" "$p" || { fail "No se pudo crear el usuario"; pause; return; }
+    set_limit "$u" "$m"
+    db_set "$u" "$name" "$exp" "$m" ACTIVO MANUAL "$p"
+    echo; ok "Usuario creado"
+    user_card "$u" "$name" "$exp" "$m" MANUAL "$p"
+    echo; generate_uri "$u" "$p"
+    pause
+}
+
+add_bulk() {
+    clear; echo "${BGC}        📦  CREAR USUARIOS EN LOTE        ${N}"; echo
+    read -rp "  Prefijo (ej. tito → tito001, tito002...): " pre
+    [[ "$pre" =~ ^[a-z][a-z0-9_-]{1,20}$ ]] || { fail "Prefijo inválido (minúsculas/números, empieza con letra)"; pause; return; }
+    read -rp "  Cantidad (1-200): " q
+    { [[ "$q" =~ ^[0-9]{1,3}$ ]] && (( 10#$q >= 1 && 10#$q <= 200 )); } || { fail "Cantidad inválida (1-200)"; pause; return; }
+    read -rp "  Días de vigencia [30]: " d; d=${d:-30}
+    valid_days "$d" || { fail "Días inválidos (1-3650)"; pause; return; }
+    read -rp "  Límite por usuario (1-999) [1]: " m; m=${m:-1}
+    valid_limit "$m" || { fail "Límite inválido (1-999)"; pause; return; }
+    q=$((10#$q)); d=$((10#$d)); m=$((10#$m))
+
+    local exp out i=0 made=0 u p
+    exp=$(date -d "+$d days" +%F)
+    out="/root/lote_${pre}_$(date +%Y%m%d_%H%M%S).txt"
+    : > "$out"; chmod 600 "$out"
     echo
-    ok "Dispositivo autorizado"
-    echo "    ${C}HWID (user/pass):${N} $h"
-    echo "    ${C}Cliente:${N}          $name"
-    echo "    ${C}Vence:${N}            $exp ($d días)"
-    echo "    ${C}Simultáneos:${N}      $m"
-    echo
-    generate_uri "$h"
+    printf "${C}%-20s %-12s %-11s %s${N}\n" USUARIO CLAVE VENCE LIM
+    sline
+    while (( made < q && i < 9999 )); do
+        i=$((i+1)); u=$(printf "%s%03d" "$pre" "$i")
+        id "$u" &>/dev/null && continue
+        [[ -n $(db_get "$u") ]] && continue
+        p=$(rand_pass)
+        create_user "$u" "$u" "$exp" "$p" || continue
+        set_limit "$u" "$m"
+        db_set "$u" "$u" "$exp" "$m" ACTIVO MANUAL "$p"
+        printf "%-20s %-12s %-11s %s\n" "$u" "$p" "$exp" "$m"
+        echo "$u | $p | $exp | $m | $(build_uri "$u" "$p")" >> "$out"
+        made=$((made+1))
+    done
+    echo; ok "$made usuario(s) creados"
+    ok "Lista con links guardada en: ${W}$out${N}"
     pause
 }
 
 list_clients() {
     clear; echo "${BGC}        📊  CLIENTES REGISTRADOS        ${N}"; echo
     load_conf; compute_online
-    if [[ ! -s $DB ]]; then warn "No hay dispositivos registrados."; pause; return; fi
-    printf "${C}%-18s %-12s %-11s %-6s %-4s %-5s %s${N}\n" HWID CLIENTE VENCE DÍAS LIM ONL ESTADO
+    if [[ ! -s $DB ]]; then warn "No hay usuarios registrados."; pause; return; fi
+    read -rp "  Filtro (Enter = todos): " f
+    echo
+    printf "${C}%-18s %-7s %-10s %-10s %-11s %-5s %-4s %-4s %s${N}\n" USUARIO/HWID TIPO CLAVE CLIENTE VENCE DÍAS LIM ONL ESTADO
     sline
-    local today h n e m s dl st
+    local today h n e m s t p dl st pv shown=0
     today=$(date +%F)
-    while IFS='|' read -r h n e m s; do
+    while IFS='|' read -r h n e m s t p; do
         [[ -z $h ]] && continue
+        [[ -n $f && "$h|$n" != *"$f"* ]] && continue
+        t=${t:-HWID}
+        if [[ $t == MANUAL ]]; then pv=$p; else pv="-"; fi
         dl=$(days_left "$e")
         if [[ "$s" == "SUSPENDIDO" ]]; then st="${Y}SUSPENDIDO${N}"
         elif [[ ! "$e" > "$today" ]]; then st="${R}VENCIDO${N}"
         else st="${G}ACTIVO${N}"; fi
-        printf "%-18s %-12s %-11s %-6s %-4s %-5s %s\n" "$h" "${n:0:12}" "$e" "$dl" "$m" "${ON[$h]:-0}" "$st"
+        printf "%-18s %-7s %-10s %-10s %-11s %-5s %-4s %-4s %s\n" "$h" "$t" "$pv" "${n:0:10}" "$e" "$dl" "$m" "${ON[$h]:-0}" "$st"
+        shown=$((shown+1))
     done < "$DB"
-    echo; pause
+    echo; echo "  ${C}Mostrando:${N} $shown"
+    pause
+}
+
+edit_client() {
+    clear; echo "${BGC}        ✏  EDITAR USUARIO / HWID        ${N}"; echo
+    read -rp "  Usuario o HWID: " h
+    local rec; rec=$(db_get "$h")
+    [[ -z $rec ]] && { fail "No registrado en TitoFlow"; pause; return; }
+    local n e m s t p
+    IFS='|' read -r _ n e m s t p <<< "$rec"; t=${t:-HWID}
+    echo
+    user_card "$h" "$n" "$e" "$m" "$t" "$p"
+    echo
+    echo "  1) Cambiar contraseña  (solo usuarios MANUAL)"
+    echo "  2) Cambiar límite de conexiones (1-999)"
+    echo "  3) Cambiar vencimiento (días desde hoy, o fecha AAAA-MM-DD)"
+    echo "  4) Cambiar nombre / referencia"
+    echo "  0) Volver"
+    read -rp "  Opción: " o
+    case $o in
+        1)  [[ $t != MANUAL ]] && { warn "Un HWID siempre usa su propio ID como contraseña."; pause; return; }
+            read -rp "  Nueva contraseña [Enter = generar]: " np; np=${np:-$(rand_pass)}
+            valid_pass "$np" || { fail "Contraseña inválida"; pause; return; }
+            echo "$h:$np" | chpasswd && db_set "$h" "$n" "$e" "$m" "$s" MANUAL "$np"
+            ok "Contraseña cambiada: ${W}$np${N}" ;;
+        2)  read -rp "  Nuevo límite (1-999): " nm
+            valid_limit "$nm" || { fail "Límite inválido"; pause; return; }
+            nm=$((10#$nm)); set_limit "$h" "$nm"; db_set "$h" "$n" "$e" "$nm" "$s"
+            ok "Límite: $nm" ;;
+        3)  read -rp "  Días desde hoy o fecha: " v
+            local ne
+            if [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && date -d "$v" >/dev/null 2>&1; then ne=$(date -d "$v" +%F)
+            elif valid_days "$v"; then ne=$(date -d "+$((10#$v)) days" +%F)
+            else fail "Valor inválido"; pause; return; fi
+            usermod -e "$ne" "$h" && db_set "$h" "$n" "$ne" "$m" "$s"
+            ok "Vence: $ne" ;;
+        4)  read -rp "  Nuevo nombre: " nn; nn=${nn//|/ }
+            [[ -n $nn ]] && db_set "$h" "$nn" "$e" "$m" "$s" && ok "Nombre actualizado" ;;
+        *)  return ;;
+    esac
+    pause
 }
 
 renew_client() {
-    clear; echo "${BGC}        🔄  RENOVAR HWID        ${N}"; echo
-    read -rp "  HWID: " h
+    clear; echo "${BGC}        🔄  RENOVAR        ${N}"; echo
+    read -rp "  Usuario o HWID: " h
     local rec; rec=$(db_get "$h")
-    [[ -z $rec ]] && { fail "HWID no registrado"; pause; return; }
-    IFS='|' read -r _ n e m s <<< "$rec"
+    [[ -z $rec ]] && { fail "No registrado en TitoFlow"; pause; return; }
+    local n e m s
+    IFS='|' read -r _ n e m s _ <<< "$rec"
     read -rp "  Días a sumar [30]: " d; d=${d:-30}
-    [[ "$d" =~ ^[0-9]+$ ]] || { fail "Días inválidos"; pause; return; }
+    valid_days "$d" || { fail "Días inválidos (1-3650)"; pause; return; }
     local base today; today=$(date +%F)
     if [[ "$e" > "$today" ]]; then base="$e"; else base="$today"; fi
-    local newexp; newexp=$(date -d "$base +$d days" +%F)
+    local newexp; newexp=$(date -d "$base +$((10#$d)) days" +%F)
     create_user "$h" "$n" "$newexp"
     db_set "$h" "$n" "$newexp" "$m" "ACTIVO"
     ok "Renovado hasta ${W}$newexp${N}"
@@ -232,39 +366,64 @@ renew_client() {
 
 toggle_client() {
     clear; echo "${BGC}        🚫  SUSPENDER / REACTIVAR        ${N}"; echo
-    read -rp "  HWID: " h
+    read -rp "  Usuario o HWID: " h
     local rec; rec=$(db_get "$h")
-    [[ -z $rec ]] && { fail "HWID no registrado"; pause; return; }
-    IFS='|' read -r _ n e m s <<< "$rec"
+    [[ -z $rec ]] && { fail "No registrado en TitoFlow"; pause; return; }
+    local n e m s
+    IFS='|' read -r _ n e m s _ <<< "$rec"
     if [[ "$s" == "SUSPENDIDO" ]]; then
         create_user "$h" "$n" "$e"
         db_set "$h" "$n" "$e" "$m" "ACTIVO"
-        ok "HWID $h reactivado"
+        ok "$h reactivado"
     else
         usermod -L "$h" 2>/dev/null
         pkill -KILL -u "$h" 2>/dev/null
         db_set "$h" "$n" "$e" "$m" "SUSPENDIDO"
-        ok "HWID $h suspendido y desconectado en vivo"
+        ok "$h suspendido y desconectado en vivo"
     fi
     pause
 }
 
+remove_one() {    # $1 = id (quita usuario del sistema y de la base)
+    pkill -KILL -u "$1" 2>/dev/null
+    userdel -f "$1" 2>/dev/null
+    sed -i "/^$1|/d" "$DB" 2>/dev/null
+    sed -i "/^$1[[:space:]]/d" "$LIMITS" 2>/dev/null
+}
+
 delete_client() {
-    clear; echo "${BGC}        🗑  ELIMINAR HWID        ${N}"; echo
-    read -rp "  HWID a eliminar: " h
-    valid_hwid "$h" || { fail "HWID inválido"; pause; return; }
-    pkill -KILL -u "$h" 2>/dev/null
-    userdel -f "$h" 2>/dev/null
-    sed -i "/^$h|/d" "$DB" 2>/dev/null
-    sed -i "/^$h[[:space:]]/d" "$LIMITS" 2>/dev/null
-    ok "HWID $h eliminado y desconectado"
+    clear; echo "${BGC}        🗑  ELIMINAR USUARIO / HWID        ${N}"; echo
+    read -rp "  Usuario o HWID a eliminar: " h
+    valid_id "$h" || { fail "Valor inválido"; pause; return; }
+    [[ -z $(db_get "$h") ]] && { fail "No registrado en TitoFlow (no lo toco)"; pause; return; }
+    remove_one "$h"
+    ok "$h eliminado y desconectado"
+    pause
+}
+
+purge_expired() {
+    clear; echo "${BGC}        🧹  ELIMINAR VENCIDOS        ${N}"; echo
+    [[ -s $DB ]] || { warn "No hay usuarios registrados."; pause; return; }
+    local today h n e m s t p list=()
+    today=$(date +%F)
+    while IFS='|' read -r h n e m s t p; do
+        [[ -z $h ]] && continue
+        [[ ! "$e" > "$today" ]] && list+=("$h")
+    done < "$DB"
+    if [[ ${#list[@]} -eq 0 ]]; then ok "No hay vencidos."; pause; return; fi
+    echo "  Vencidos (${#list[@]}): ${list[*]}"
+    read -rp "  ¿Eliminar todos? [y/N]: " c
+    if [[ $c == y || $c == Y ]]; then
+        for h in "${list[@]}"; do remove_one "$h"; done
+        ok "${#list[@]} usuario(s) eliminados"
+    fi
     pause
 }
 
 cleanup() {
     [[ -f $DB ]] || return
-    local today h n e m s; today=$(date +%F)
-    while IFS='|' read -r h n e m s; do
+    local today h n e m s t p; today=$(date +%F)
+    while IFS='|' read -r h n e m s t p; do
         [[ -z $h ]] && continue
         if [[ ! "$e" > "$today" || "$s" == "SUSPENDIDO" ]]; then
             pkill -KILL -u "$h" 2>/dev/null
@@ -273,23 +432,32 @@ cleanup() {
 }
 
 # ══════════════════════════ LINK slipnet:// ══════════════════════════
-generate_uri() {
-    local U=$1 pub
-    load_conf
+build_uri() {     # $1=usuario  $2=clave (si falta, = usuario)
+    local U=$1 P=${2:-$1} pub
     pub=$(cat "$KEY_DIR/vaydns.pub" 2>/dev/null)
-    if [[ -z $pub ]]; then warn "Aún no hay llave pública de VayDNS (opción 09)."; return; fi
+    [[ -z $pub ]] && return 1
     # Estructura slipnet v22 (VayDNS + SSH). Verifícala contra un link generado por tu app.
-    local RAW="22|vaydns_ssh|TitoFlow-VayDNS|vs.${DOMAIN}|8.8.8.8:53:0|0|5000|bbr|1080|127.0.0.1|0|${pub}|${U}|${U}|1|${U}|${U}|22|0|${SERVER_IP}|0||udp|password||||0|443|||0||0|0||0||0|0|1080|0|caa|101|0|0|0|0|0|2|0|||8080||0|/|1||"
-    echo "  ${Y}📋 Link para el cliente (VayDNS + HWID):${N}"
-    echo "${G}slipnet://$(echo -n "$RAW" | base64 -w 0)${N}"
+    local RAW="22|vaydns_ssh|TitoFlow-VayDNS|vs.${DOMAIN}|8.8.8.8:53:0|0|5000|bbr|1080|127.0.0.1|0|${pub}|${U}|${P}|1|${U}|${P}|22|0|${SERVER_IP}|0||udp|password||||0|443|||0||0|0||0||0|0|1080|0|caa|101|0|0|0|0|0|2|0|||8080||0|/|1||"
+    echo "slipnet://$(echo -n "$RAW" | base64 -w 0)"
+}
+
+generate_uri() {  # $1=usuario  $2=clave
+    load_conf
+    local uri; uri=$(build_uri "$1" "$2")
+    if [[ -z $uri ]]; then warn "Aún no hay llave pública de VayDNS (opción 13)."; return; fi
+    echo "  ${Y}📋 Link para el cliente (VayDNS):${N}"
+    echo "${G}${uri}${N}"
     echo
 }
 
 link_menu() {
     clear; echo "${BGC}        🔗  GENERAR LINK        ${N}"; echo
-    read -rp "  HWID: " h
-    [[ -z $(db_get "$h") ]] && { fail "HWID no registrado"; pause; return; }
-    generate_uri "$h"; pause
+    read -rp "  Usuario o HWID: " h
+    local rec t p; rec=$(db_get "$h")
+    [[ -z $rec ]] && { fail "No registrado en TitoFlow"; pause; return; }
+    IFS='|' read -r _ _ _ _ _ t p <<< "$rec"
+    if [[ $t == MANUAL ]]; then generate_uri "$h" "$p"; else generate_uri "$h"; fi
+    pause
 }
 
 # ══════════════════════════ MOTORES / INSTALACIÓN ══════════════════════════
@@ -446,7 +614,7 @@ PY
 
 apply_services() {
     load_conf
-    [[ -z $DOMAIN ]] && { fail "Falta el dominio (opción 08)"; return 1; }
+    [[ -z $DOMAIN ]] && { fail "Falta el dominio (opción 12)"; return 1; }
     local svcs=() sep="" routes="{"
     systemctl stop titoflow-dnsrouter titoflow-dnstt titoflow-vaydns titoflow-slipstream 2>/dev/null
 
@@ -464,7 +632,7 @@ apply_services() {
         routes+="${sep}\"ss.$DOMAIN\":$P_SLIP"; sep=","; svcs+=(titoflow-slipstream)
     fi
     routes+="}"
-    if [[ ${#svcs[@]} -eq 0 ]]; then fail "No hay motores instalados (opción 09)"; return 1; fi
+    if [[ ${#svcs[@]} -eq 0 ]]; then fail "No hay motores instalados (opción 13)"; return 1; fi
 
     echo "$routes" > "$ROUTES"
     write_router
@@ -612,15 +780,19 @@ while true; do
     read -rp " ${W}► Opción : ${N}" op
     case $op in
         1|01) add_client ;;
-        2|02) list_clients ;;
-        3|03) renew_client ;;
-        4|04) toggle_client ;;
-        5|05) delete_client ;;
-        6|06) link_menu ;;
-        7|07) restart_tunnels ;;
-        8|08) settings_menu ;;
-        9|09) engines_menu ;;
-        10) update_script ;;
+        2|02) add_manual ;;
+        3|03) add_bulk ;;
+        4|04) list_clients ;;
+        5|05) edit_client ;;
+        6|06) renew_client ;;
+        7|07) toggle_client ;;
+        8|08) delete_client ;;
+        9|09) purge_expired ;;
+        10) link_menu ;;
+        11) restart_tunnels ;;
+        12) settings_menu ;;
+        13) engines_menu ;;
+        14) update_script ;;
         0|00) clear; exit 0 ;;
     esac
 done
