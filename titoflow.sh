@@ -13,8 +13,8 @@ VERSION="2.0"
 # Binarios compilados por ti, subidos a un Release. Nombres esperados:
 #   dnstt-server-linux-amd64  vaydns-server-linux-amd64  slipstream-server-linux-amd64
 #   (y las variantes -linux-arm64 si usas VPS ARM)
-REPO_BIN="https://github.com/TU_USUARIO/titoflow-bin/releases/latest/download"
-REPO_SCRIPT="https://raw.githubusercontent.com/TU_USUARIO/titoflow/main/titoflow.sh"
+REPO_BIN="https://github.com/TitoYTMex23/TitoMXTunnel/releases/latest/download"
+REPO_SCRIPT="https://raw.githubusercontent.com/TitoYTMex23/TitoMXTunnel/main/titoflow.sh"
 # ──────────────────────────────────────────────────────
 
 CONF_DIR="/etc/titoflow"
