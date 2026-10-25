@@ -1,13 +1,13 @@
 #!/bin/bash
 # ==============================================================================
-#  ⚡ TITOFLOW DATA CENTER v2.0 — Motor propio + Gestor HWID  (TitoMX)
+#  ⚡ TITOFLOW DATA CENTER v2.1 — Motor propio + Gestor HWID + Selector de protocolo  (TitoMX)
 #  Instalador y panel en un solo archivo. Debian 10+/Ubuntu 20.04+ (apt).
 #  Uso:  bash titoflow.sh      → instala (1ra vez) y abre el panel
 #        titoflow              → abre el panel
 #        titoflow --cleanup    → corta sesiones vencidas (lo corre cron solo)
 # ==============================================================================
 
-VERSION="2.0"
+VERSION="2.1"
 
 # ───────── TU GITHUB (ya configurado) ─────────
 # Binarios compilados por ti, subidos a un Release. Nombres esperados:
@@ -125,16 +125,16 @@ dashboard() {
     line
     echo " ${C}◈${N} RAM: ${W}${ram}${N}  ${C}◈${N} CPU: ${W}${cpu}%${N}  ${C}◈${N} DISCO: ${W}${disk}${N}"
     line
-    echo " ${R}[${W}01${R}]${N} ${C}◈${N} CREAR HWID  ${G}(con link)${N}"
-    echo " ${R}[${W}02${R}]${N} ${C}◈${N} CREAR USUARIO MANUAL  ${G}(usuario / clave)${N}"
-    echo " ${R}[${W}03${R}]${N} ${C}◈${N} CREAR USUARIOS EN LOTE"
+    echo " ${R}[${W}01${R}]${N} ${C}◈${N} CREAR HWID  ${G}(elige protocolo)${N}"
+    echo " ${R}[${W}02${R}]${N} ${C}◈${N} CREAR USUARIO MANUAL  ${G}(elige protocolo)${N}"
+    echo " ${R}[${W}03${R}]${N} ${C}◈${N} CREAR USUARIOS EN LOTE  ${G}(elige protocolo)${N}"
     echo " ${R}[${W}04${R}]${N} ${C}◈${N} LISTA DE CLIENTES  ${G}(online / vencimientos)${N}"
     echo " ${R}[${W}05${R}]${N} ${C}◈${N} EDITAR  ${G}(clave / límite / vencimiento)${N}"
     echo " ${R}[${W}06${R}]${N} ${C}◈${N} RENOVAR"
     echo " ${R}[${W}07${R}]${N} ${C}◈${N} SUSPENDER / REACTIVAR"
     echo " ${R}[${W}08${R}]${N} ${C}◈${N} ELIMINAR"
     echo " ${R}[${W}09${R}]${N} ${C}◈${N} ELIMINAR VENCIDOS"
-    echo " ${R}[${W}10${R}]${N} ${C}◈${N} GENERAR LINK slipnet://"
+    echo " ${R}[${W}10${R}]${N} ${C}◈${N} GENERAR LINK slipnet://  ${G}(elige protocolo)${N}"
     echo " ${R}[${W}11${R}]${N} ${C}◈${N} REINICIAR TÚNELES"
     echo " ${R}[${W}12${R}]${N} ${C}◈${N} AJUSTES  ${G}(dominio / MTU / puerto destino)${N}"
     echo " ${R}[${W}13${R}]${N} ${C}◈${N} INSTALAR / REPARAR / ACTUALIZAR MOTORES"
@@ -198,6 +198,7 @@ user_card() {     # id nombre exp lim tipo clave
 
 add_client() {
     clear; echo "${BGC}        🔑  AUTORIZAR NUEVO DISPOSITIVO (HWID)        ${N}"; echo
+    choose_proto || return
     read -rp "  HWID del dispositivo: " h
     valid_hwid "$h" || { fail "HWID inválido (solo letras/números, 6-32)"; pause; return; }
     is_foreign "$h" && { fail "Ese nombre ya existe en el sistema (no es de TitoFlow)"; pause; return; }
@@ -215,12 +216,14 @@ add_client() {
     db_set "$h" "$name" "$exp" "$m" ACTIVO HWID ""
     echo; ok "Dispositivo autorizado"
     user_card "$h" "$name" "$exp" "$m" HWID ""
-    echo; generate_uri "$h"
+    echo "    ${C}Protocolo:${N}    $(proto_title)"
+    echo; generate_uri "$h" "" "$PROTO"
     pause
 }
 
 add_manual() {
     clear; echo "${BGC}        👤  CREAR USUARIO MANUAL (usuario + contraseña)        ${N}"; echo
+    choose_proto || return
     read -rp "  Usuario (minúsculas/números, 3-32): " u
     valid_uname "$u" || { fail "Usuario inválido (minúsculas, números, _ -; empieza con letra)"; pause; return; }
     is_foreign "$u" && { fail "Ese usuario ya existe en el sistema (no es de TitoFlow)"; pause; return; }
@@ -240,12 +243,14 @@ add_manual() {
     db_set "$u" "$name" "$exp" "$m" ACTIVO MANUAL "$p"
     echo; ok "Usuario creado"
     user_card "$u" "$name" "$exp" "$m" MANUAL "$p"
-    echo; generate_uri "$u" "$p"
+    echo "    ${C}Protocolo:${N}    $(proto_title)"
+    echo; generate_uri "$u" "$p" "$PROTO"
     pause
 }
 
 add_bulk() {
     clear; echo "${BGC}        📦  CREAR USUARIOS EN LOTE        ${N}"; echo
+    choose_proto || return
     read -rp "  Prefijo (ej. tito → tito001, tito002...): " pre
     [[ "$pre" =~ ^[a-z][a-z0-9_-]{1,20}$ ]] || { fail "Prefijo inválido (minúsculas/números, empieza con letra)"; pause; return; }
     read -rp "  Cantidad (1-200): " q
@@ -272,7 +277,7 @@ add_bulk() {
         set_limit "$u" "$m"
         db_set "$u" "$u" "$exp" "$m" ACTIVO MANUAL "$p"
         printf "%-20s %-12s %-11s %s\n" "$u" "$p" "$exp" "$m"
-        echo "$u | $p | $exp | $m | $(build_uri "$u" "$p")" >> "$out"
+        bulk_links "$u" "$p" "$exp" "$m" >> "$out"
         made=$((made+1))
     done
     echo; ok "$made usuario(s) creados"
@@ -431,23 +436,102 @@ cleanup() {
     done < "$DB"
 }
 
-# ══════════════════════════ LINK slipnet:// ══════════════════════════
-build_uri() {     # $1=usuario  $2=clave (si falta, = usuario)
-    local U=$1 P=${2:-$1} pub
-    pub=$(cat "$KEY_DIR/vaydns.pub" 2>/dev/null)
-    [[ -z $pub ]] && return 1
-    # Estructura slipnet v22 (VayDNS + SSH). Verifícala contra un link generado por tu app.
-    local RAW="22|vaydns_ssh|TitoFlow-VayDNS|vs.${DOMAIN}|8.8.8.8:53:0|0|5000|bbr|1080|127.0.0.1|0|${pub}|${U}|${P}|1|${U}|${P}|22|0|${SERVER_IP}|0||udp|password||||0|443|||0||0|0||0||0|0|1080|0|caa|101|0|0|0|0|0|2|0|||8080||0|/|1||"
+# ══════════════════════════ PROTOCOLOS + LINK slipnet:// ══════════════════════════
+# Todos los protocolos DNS terminan en el mismo SSH local: un usuario sirve en cualquiera.
+# Para sumar uno nuevo: agrega su línea aquí y su motor en apply_services.
+# clave|etiqueta|tipo slipnet|subdominio|llave pública (vacío = no usa)|motor
+PROTOS=(
+    "vaydns|VayDNS + SSH|vaydns_ssh|vs|vaydns.pub|vaydns-server"
+    "dnstt|DNSTT + SSH|dnstt_ssh|ts|dnstt.pub|dnstt-server"
+    "slipstream|Slipstream + SSH|slipstream_ssh|ss||slipstream-server"
+)
+# Protocolos cuyo link ya se comprobó contra la app. Los demás muestran un aviso.
+VERIFIED="vaydns"
+PROTO=""
+
+proto_load() {    # $1=clave → PR_KEY PR_LABEL PR_TYPE PR_SUB PR_KEYF PR_ENG
+    local p
+    for p in "${PROTOS[@]}"; do
+        [[ ${p%%|*} == "$1" ]] && { IFS='|' read -r PR_KEY PR_LABEL PR_TYPE PR_SUB PR_KEYF PR_ENG <<< "$p"; return 0; }
+    done
+    return 1
+}
+
+proto_installed() { [[ -f "/etc/systemd/system/titoflow-$1.service" ]]; }
+
+proto_title() {
+    if [[ $PROTO == all ]]; then echo "TODOS"
+    else proto_load "$PROTO" && echo "$PR_LABEL"; fi
+}
+
+choose_proto() {  # deja la elección en $PROTO (vaydns | dnstt | slipstream | all)
+    local p i=0 k lbl st n=${#PROTOS[@]} o
+    PROTO=""
+    echo "  ${Y}¿Qué protocolo quieres crear?${N}"
+    echo
+    for p in "${PROTOS[@]}"; do
+        i=$((i+1)); k=${p%%|*}; lbl=$(echo "$p" | cut -d'|' -f2)
+        if proto_installed "$k"; then st="${G}ON${N}"; else st="${R}no instalado${N}"; fi
+        echo "   ${R}[${W}${i}${R}]${N} ${C}◈${N} ${lbl}  ${st}"
+    done
+    echo "   ${R}[${W}$((n+1))${R}]${N} ${C}◈${N} TODOS  ${G}(un link por cada protocolo activo)${N}"
+    echo "   ${R}[${W}0${R}]${N} ${C}◈${N} ${R}[ CANCELAR ]${N}"
+    echo
+    read -rp "  ${W}► Protocolo [1]: ${N}" o; o=${o:-1}
+    [[ $o == 0 ]] && return 1
+    if [[ $o =~ ^[0-9]+$ ]] && (( 10#$o == n + 1 )); then
+        PROTO=all
+    elif [[ $o =~ ^[0-9]+$ ]] && (( 10#$o >= 1 && 10#$o <= n )); then
+        p=${PROTOS[$((10#$o-1))]}; k=${p%%|*}
+        proto_installed "$k" || { fail "Ese protocolo no está instalado (opción 13 para instalarlo)"; pause; return 1; }
+        PROTO=$k
+    else
+        fail "Opción inválida"; pause; return 1
+    fi
+    echo
+}
+
+build_uri() {     # $1=clave de protocolo  $2=usuario  $3=clave (si falta, = usuario)
+    local U=$2 P=${3:-$2} pub=""
+    proto_load "$1" || return 1
+    if [[ -n $PR_KEYF ]]; then
+        pub=$(cat "$KEY_DIR/$PR_KEYF" 2>/dev/null)
+        [[ -z $pub ]] && return 1
+    fi
+    # Estructura slipnet v22 (la misma que genera tu app para VayDNS + SSH).
+    local RAW="22|${PR_TYPE}|TitoFlow-${PR_LABEL%% *}|${PR_SUB}.${DOMAIN}|8.8.8.8:53:0|0|5000|bbr|1080|127.0.0.1|0|${pub}|${U}|${P}|1|${U}|${P}|22|0|${SERVER_IP}|0||udp|password||||0|443|||0||0|0||0||0|0|1080|0|caa|101|0|0|0|0|0|2|0|||8080||0|/|1||"
     echo "slipnet://$(echo -n "$RAW" | base64 -w 0)"
 }
 
-generate_uri() {  # $1=usuario  $2=clave
+generate_uri() {  # $1=usuario  $2=clave (vacío en HWID)  $3=protocolo (vaydns|dnstt|slipstream|all)
     load_conf
-    local uri; uri=$(build_uri "$1" "$2")
-    if [[ -z $uri ]]; then warn "Aún no hay llave pública de VayDNS (opción 13)."; return; fi
-    echo "  ${Y}📋 Link para el cliente (VayDNS):${N}"
-    echo "${G}${uri}${N}"
-    echo
+    local which=${3:-vaydns} ks=() p k uri
+    if [[ $which == all ]]; then
+        for p in "${PROTOS[@]}"; do k=${p%%|*}; proto_installed "$k" && ks+=("$k"); done
+    else
+        ks=("$which")
+    fi
+    [[ ${#ks[@]} -eq 0 ]] && { warn "No hay protocolos activos (opción 13)."; return; }
+    for k in "${ks[@]}"; do
+        proto_load "$k" || continue
+        uri=$(build_uri "$k" "$1" "$2")
+        if [[ -z $uri ]]; then warn "$PR_LABEL: falta la llave pública (opción 13)."; continue; fi
+        echo "  ${Y}📋 Link para el cliente ($PR_LABEL):${N}"
+        echo "${G}${uri}${N}"
+        [[ " $VERIFIED " == *" $k "* ]] || echo "  ${Y}⚠ El formato de $PR_LABEL aún no está verificado con la app: prueba el link antes de entregarlo.${N}"
+        echo
+    done
+}
+
+bulk_links() {    # $1=usuario $2=clave $3=vence $4=límite  (usa $PROTO; una línea por protocolo)
+    local p k
+    for p in "${PROTOS[@]}"; do
+        k=${p%%|*}
+        [[ $PROTO != all && $PROTO != "$k" ]] && continue
+        proto_installed "$k" || continue
+        proto_load "$k"
+        echo "$1 | $2 | $3 | $4 | $PR_LABEL | $(build_uri "$k" "$1" "$2")"
+    done
 }
 
 link_menu() {
@@ -456,7 +540,10 @@ link_menu() {
     local rec t p; rec=$(db_get "$h")
     [[ -z $rec ]] && { fail "No registrado en TitoFlow"; pause; return; }
     IFS='|' read -r _ _ _ _ _ t p <<< "$rec"
-    if [[ $t == MANUAL ]]; then generate_uri "$h" "$p"; else generate_uri "$h"; fi
+    [[ $t == MANUAL ]] || p=""
+    echo
+    choose_proto || return
+    generate_uri "$h" "$p" "$PROTO"
     pause
 }
 
@@ -511,6 +598,11 @@ gen_keys() {
         warn "Falta la llave pública de VayDNS (64 caracteres hex)."
         read -rp "  Pégala aquí: " pk
         [[ $pk =~ ^[0-9a-fA-F]{64}$ ]] && echo "$pk" > "$KEY_DIR/vaydns.pub" || warn "Llave inválida; podrás ponerla en $KEY_DIR/vaydns.pub"
+    fi
+    if [[ -f $KEY_DIR/dnstt.key && ! -s $KEY_DIR/dnstt.pub ]]; then
+        warn "Falta la llave pública de DNSTT (64 caracteres hex)."
+        read -rp "  Pégala aquí (Enter = omitir): " pk
+        [[ $pk =~ ^[0-9a-fA-F]{64}$ ]] && echo "$pk" > "$KEY_DIR/dnstt.pub" || warn "Sin llave pública DNSTT; podrás ponerla en $KEY_DIR/dnstt.pub"
     fi
 }
 
