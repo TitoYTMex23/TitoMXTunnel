@@ -558,7 +558,9 @@ build_uri() {     # $1=proto_key $2=usuario $3=clave $4=exp_date(YYYY-MM-DD) $5=
 
     local exp_ms=0 is_locked="0"
     [[ -n $exp_str ]] && exp_ms=$(exp_millis "$exp_str" 2>/dev/null || echo 0)
-    [[ -n $bound || $exp_ms -gt 0 ]] && is_locked="1"
+    # El vencimiento NO necesita isLocked (la app valida expirationDate sola).
+    # isLocked en un link sin cifrar es solo una etiqueta: no protege nada.
+    [[ -n $bound ]] && is_locked="1"
 
     local rtype="txt" cid="0"
     if [[ $PR_TYPE == vaydns* ]]; then
@@ -607,6 +609,61 @@ JSON
     echo "titomx://$(echo -n "$json" | base64 -w 0 | tr '+/' '-_' | tr -d '=')"
 }
 
+build_titomx_manual_uri() { # $1=proto_key $2=usuario $3=clave $4=exp_date $5=nombre → titomx:// editable (sin bloqueo)
+    load_conf
+    local k=$1 U=$2 P=$3 exp_str=$4 cname=${5:-$2} pub=""
+    proto_load "$k" || return 1
+    if [[ -n $PR_KEYF ]]; then
+        pub=$(cat "$KEY_DIR/$PR_KEYF" 2>/dev/null | tr -d '[:space:]')
+        [[ -z $pub ]] && return 1
+    fi
+
+    local enum_name
+    case "$PR_TYPE" in
+        vaydns_ssh)     enum_name="VAYDNS_SSH" ;;
+        dnstt_ssh)      enum_name="DNSTT_SSH" ;;
+        sayedns_ssh)    enum_name="NOIZDNS_SSH" ;;
+        slipstream_ssh) enum_name="SLIPSTREAM_SSH" ;;
+        ssh)            enum_name="SSH" ;;
+        vaydns)         enum_name="VAYDNS" ;;
+        dnstt)          enum_name="DNSTT" ;;
+        sayedns)        enum_name="NOIZDNS" ;;
+        ss)             enum_name="SLIPSTREAM" ;;
+        *) return 1 ;;
+    esac
+
+    local dom="${DOMAIN}"
+    [[ -n $PR_SUB ]] && dom="${PR_SUB}.${DOMAIN}"
+    [[ $PR_TYPE == "ssh" ]] && dom="${DOMAIN:-$SERVER_IP}"
+
+    local exp_ms=0
+    [[ -n $exp_str ]] && exp_ms=$(exp_millis "$exp_str" 2>/dev/null || echo 0)
+    local stealth_bool="false"
+    [[ $PR_STEALTH == "1" ]] && stealth_bool="true"
+
+    # RESOLVER "host:puerto:auth[,host:puerto:auth]" → arreglo JSON
+    local res_json="" r h pt au
+    IFS=',' read -ra _rs <<< "$RESOLVER"
+    for r in "${_rs[@]}"; do
+        IFS=':' read -r h pt au <<< "$r"
+        [[ -z $h ]] && continue
+        [[ -n $res_json ]] && res_json+=","
+        res_json+="{\"host\":\"${h}\",\"port\":${pt:-53},\"authoritative\":$([[ $au == 1 ]] && echo true || echo false)}"
+    done
+
+    # SSH (usuario/clave SSH) o SOCKS5 (usuario/clave SOCKS)
+    local creds
+    if [[ $PR_TYPE == *_ssh || $PR_TYPE == "ssh" ]]; then
+        creds="\"sshUsername\":\"${U}\",\"sshPassword\":\"${P}\",\"sshPort\":22,\"sshHost\":\"${SERVER_IP}\",\"sshAuthType\":\"PASSWORD\""
+    else
+        creds="\"socksUsername\":\"${U}\",\"socksPassword\":\"${P}\""
+    fi
+
+    local json
+    json="{\"version\":1,\"profile\":{\"name\":\"TitoFlow-${PR_LABEL%% *}-${cname}\",\"domain\":\"${dom}\",\"resolvers\":[${res_json}],\"tunnelType\":\"${enum_name}\",\"dnsttPublicKey\":\"${pub}\",${creds},\"socks5ServerPort\":${SOCKS_PORT},\"isLocked\":false,\"hwidLogin\":false,\"expirationDate\":${exp_ms},\"noizdnsStealth\":${stealth_bool},\"vaydnsRecordType\":\"${VAY_RTYPE:-caa}\",\"vaydnsClientIdSize\":2,\"resolverMode\":\"FANOUT\",\"rrSpreadCount\":3}}"
+    echo "titomx://$(echo -n "$json" | base64 -w 0 | tr '+/' '-_' | tr -d '=')"
+}
+
 generate_uri() {  # $1=usuario $2=clave $3=proto $4=exp_date $5=tipo(HWID|MANUAL) $6=nombre
     load_conf
     local u=$1 p=${2:-$1} which=${3:-vaydns} exp=$4 tipo=${5:-MANUAL} cname=${6:-$1}
@@ -627,6 +684,14 @@ generate_uri() {  # $1=usuario $2=clave $3=proto $4=exp_date $5=tipo(HWID|MANUAL
 
     for k in "${ks[@]}"; do
         proto_load "$k" || continue
+        if [[ $tipo == "MANUAL" ]]; then
+            t_uri=$(build_titomx_manual_uri "$k" "$u" "$p" "$exp" "$cname")
+            if [[ -z $t_uri ]]; then warn "$PR_LABEL: falta la llave pública ($KEY_DIR/$PR_KEYF). Usa opción 13."; continue; fi
+            echo "  ${Y}📋 Link titomx:// ($PR_LABEL):${N}"
+            echo "${G}${t_uri}${N}"
+            echo
+            continue
+        fi
         uri=$(build_uri "$k" "$u" "$p" "$exp" "$bound")
         if [[ -z $uri ]]; then warn "$PR_LABEL: falta la llave pública ($KEY_DIR/$PR_KEYF). Usa opción 13."; continue; fi
         echo "  ${Y}📋 Link slipnet:// ($PR_LABEL):${N}"
@@ -649,7 +714,7 @@ bulk_links() {    # $1=usuario $2=clave $3=vence $4=límite
             continue
         fi
         proto_installed "$k" || continue
-        echo "$1 | $2 | $3 | $4 | $PR_LABEL | $(build_uri "$k" "$1" "$2" "$3" "")"
+        echo "$1 | $2 | $3 | $4 | $PR_LABEL | $(build_titomx_manual_uri "$k" "$1" "$2" "$3" "$1")"
     done
 }
 
